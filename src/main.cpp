@@ -54,8 +54,7 @@ int electricityPos = 0;
 bool electricityDirUp = true;
 
 // --- WiFi Setup ---
-// const char* ssid = "VM2038329";
-// const char* password = "qryf9dmTtcy4";
+
 const char* ssid = "danlers1234";
 const char* password = "Danlers1234";
 
