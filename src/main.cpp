@@ -2,12 +2,14 @@
 #include <FastLED.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266HTTPClient.h>
 
 // ------------------- LED Setup -------------------
 #define LED_TYPE WS2812B
 #define COLOR_ORDER GRB
 #define NUM_LEDS 300
-#define DATA_PIN 2  // D4 on ESP8266
+#define DATA_PIN 2  // D4 on ESP8266 (Tentacle pin)
+// #define DATA_PIN 15  // D4 on ESP8266 (Test Pin)
 
 CRGB leds[NUM_LEDS];
 
@@ -47,30 +49,120 @@ enum DisplayMode {
   MODE_BLUE,
   MODE_PURPLE,
   MODE_PINK,
-  MODE_ORANGE
+  MODE_YELLOW,
+  MODE_ORANGE,
+  MODE_XMAS0,
+  MODE_XMAS1,
+  MODE_XMAS2,
+  MODE_HALLOWEEN0,
+  MODE_HALLOWEEN1,
+  MODE_HALLOWEEN2,
+  MODE_HALLOWEEN3,
+  MODE_HALLOWEEN4
 };
+
+// Halloween effect declarations
+void showHalloween0();
+void showHalloween1();
+void showHalloween2();
+void showHalloween3();
+void handleHalloween0();
+void handleHalloween1();
+void handleHalloween2();
+void handleHalloween3();
+void showHalloween4();
+void handleHalloween4();
 DisplayMode currentMode = MODE_NONE;
 int electricityPos = 0;
 bool electricityDirUp = true;
 
 // --- WiFi Setup ---
 
-const char* ssid = "danlers1234";
-const char* password = "Danlers1234";
 
-// Static IP configuration
-IPAddress local_IP(172, 20, 10, 10);      // Change last octet as needed
-IPAddress gateway(172, 20, 10, 0);
+
+
+
+// Home Configuration
+
+// const char* ssid = "VM8947480";
+// const char* password = "phnX7zzjwpwkk2ow";
 // IPAddress local_IP(192, 168, 0, 199);      // Change last octet as needed
 // IPAddress gateway(192, 168, 0, 1);
-IPAddress subnet(255, 255, 255, 240);
 // IPAddress subnet(255, 255, 255, 0); // Standard subnet for home networks
+
+// Portable Configuration
+
+const char* ssid = "danlers1234";
+const char* password = "Danlers1234";
+IPAddress subnet(255, 255, 255, 240);
+IPAddress local_IP(172, 20, 10, 10);      // Change last octet as needed
+IPAddress gateway(172, 20, 10, 0);
 
 
 unsigned long lastFrameTime = 0;
 const int frameInterval = 30; // ms
 
 ESP8266WebServer server(80);
+const char* relayHosts[] = {"172.20.10.11", "172.20.10.12", "172.20.10.13"};
+
+bool isRelayRequest() {
+  if (!server.hasArg("relay")) return false;
+  String relayValue = server.arg("relay");
+  return relayValue.equalsIgnoreCase("true") || relayValue == "1";
+}
+
+String buildRelayQueryString() {
+  String query = "";
+  for (int i = 0; i < server.args(); i++) {
+    String name = server.argName(i);
+    if (name.equalsIgnoreCase("relay")) continue;
+    if (query.length() == 0) {
+      query += "?";
+    } else {
+      query += "&";
+    }
+    query += name + "=" + server.arg(i);
+  }
+  return query;
+}
+
+void relayRequestToHost(const char* host) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Relay skipped: WiFi not connected");
+    return;
+  }
+
+  String url = String("http://") + host + server.uri() + buildRelayQueryString();
+  Serial.print("Relay request URL: ");
+  Serial.println(url);
+
+  HTTPClient http;
+  WiFiClient client;
+  if (!http.begin(client, url)) {
+    Serial.print("Relay begin failed for host: ");
+    Serial.println(host);
+    return;
+  }
+
+  int httpCode = http.GET();
+  Serial.print("Relay host ");
+  Serial.print(host);
+  Serial.print(" returned code ");
+  Serial.println(httpCode);
+  http.end();
+}
+
+void maybeRelay() {
+  if (!isRelayRequest()) {
+    Serial.println("maybeRelay: relay disabled");
+    return;
+  }
+
+  Serial.println("maybeRelay: relay enabled");
+  for (unsigned int i = 0; i < sizeof(relayHosts) / sizeof(relayHosts[0]); i++) {
+    relayRequestToHost(relayHosts[i]);
+  }
+}
 
 // ------------------- Function Declarations -------------------
 void setup_wifi();
@@ -116,10 +208,31 @@ void handlePink() {
   currentMode = MODE_PINK;
   server.send(200, "text/plain", "Pink effect triggered");
 }
+void showYellow();
+void handleYellow() {
+  currentMode = MODE_YELLOW;
+  server.send(200, "text/plain", "Yellow effect triggered");
+}
 void showOrange();
 void handleOrange() {
   currentMode = MODE_ORANGE;
   server.send(200, "text/plain", "Orange effect triggered");
+}
+// Christmas effect declarations and handlers
+void showChristmas0();
+void showChristmas1();
+void showChristmas2();
+void handleChristmas0() {
+  currentMode = MODE_XMAS0;
+  server.send(200, "text/plain", "Christmas 0 effect triggered");
+}
+void handleChristmas1() {
+  currentMode = MODE_XMAS1;
+  server.send(200, "text/plain", "Christmas 1 effect triggered");
+}
+void handleChristmas2() {
+  currentMode = MODE_XMAS2;
+  server.send(200, "text/plain", "Christmas 2 effect triggered");
 }
 
 // ------------------- Boot Status Lights -------------------
@@ -348,15 +461,196 @@ void showPink() {
   }
 }
 
-void showOrange() {
-  fill_solid(leds, NUM_LEDS, CRGB(255, 120, 0));
-  for (int i = 0; i < NUM_LEDS / 8; i++) {
+void showYellow() {
+  // Warm yellow fill with subtle amber flicker
+  fill_solid(leds, NUM_LEDS, CRGB(200, 170, 0));
+  // Add brighter yellow/amber highlights
+  for (int i = 0; i < NUM_LEDS / 6; i++) {
     int idx = random(NUM_LEDS);
-    uint8_t r = 200 + random8(55);
-    uint8_t g = 120 + random8(60);
-    uint8_t b = random8(20);
+    uint8_t r = 220 + random8(35); // 220-255
+    uint8_t g = 180 + random8(60); // 180-239
+    uint8_t b = random8(24);       // small blue component
     leds[idx] = CRGB(r, g, b);
   }
+  // Occasional white-hot sparkles
+  for (int i = 0; i < NUM_LEDS / 40; i++) {
+    int idx = random(NUM_LEDS);
+    leds[idx] = CRGB(255, 255, 200);
+  }
+}
+
+void showOrange() {
+}
+// --- Christmas Effects ---
+// Christmas 0: Alternating red/green blocks with white twinkles
+void showChristmas0() {
+  const int blockSize = 10;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    bool isRed = ((i / blockSize) % 2 == 0);
+    leds[i] = isRed ? CRGB(255, 0, 0) : CRGB(0, 255, 0);
+    // add occasional white twinkles
+    if (random8(90) == 0) {
+      leds[i] = CRGB::White;
+    }
+  }
+}
+
+// Christmas 1: Global red/green flash pulse with sparkles
+void showChristmas1() {
+  static unsigned long lastToggle = 0;
+  static bool phaseRed = true;
+  unsigned long now = millis();
+  const unsigned long interval = 300; // ms
+  if (now - lastToggle > interval) {
+    lastToggle = now;
+    phaseRed = !phaseRed;
+  }
+  CRGB base = phaseRed ? CRGB(255, 0, 0) : CRGB(0, 255, 0);
+  fill_solid(leds, NUM_LEDS, base);
+  // add bright sparkles of opposite color and some white
+  for (int i = 0; i < NUM_LEDS / 12; i++) {
+    int idx = random(NUM_LEDS);
+    leds[idx] = phaseRed ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
+  }
+  for (int i = 0; i < NUM_LEDS / 40; i++) {
+    int idx = random(NUM_LEDS);
+    leds[idx] = CRGB::White;
+  }
+}
+
+// Christmas 2: Moving candy-cane stripes (red/white) with green sparkles
+void showChristmas2() {
+  static uint8_t offset = 0;
+  const uint8_t stripeWidth = 4; // pixels per color stripe
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t pos = (i + offset) % (stripeWidth * 2);
+    bool redStripe = pos < stripeWidth;
+    leds[i] = redStripe ? CRGB(255, 0, 0) : CRGB(255, 255, 255);
+  }
+  // sprinkle some green
+  for (int i = 0; i < NUM_LEDS / 18; i++) {
+    int idx = random(NUM_LEDS);
+    leds[idx] = CRGB(0, 255, 0);
+  }
+  offset++;
+}
+// --- Halloween Effects ---
+// Halloween 0: Alternating orange and purple, with random white flashes
+void showHalloween0() {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    if ((i / 10) % 2 == 0) {
+      leds[i] = CRGB(255, 40, 10); // more red-orange
+    } else {
+      leds[i] = CRGB(120, 0, 180); // purple
+    }
+    if (random8(60) == 0) {
+      leds[i] = CRGB::White;
+    }
+  }
+}
+
+// Halloween 1: Orange base, purple "ghost" pulses moving along the strip
+void showHalloween1() {
+  static uint8_t ghostPos = 0;
+  fill_solid(leds, NUM_LEDS, CRGB(255, 40, 10));
+  for (int i = 0; i < 5; i++) {
+    int pos = (ghostPos + i * (NUM_LEDS / 5)) % NUM_LEDS;
+    for (int j = -2; j <= 2; j++) {
+      int idx = pos + j;
+      if (idx >= 0 && idx < NUM_LEDS) {
+        leds[idx] = CRGB(120, 0, 180); // purple ghost
+      }
+    }
+  }
+  ghostPos = (ghostPos + 1) % NUM_LEDS;
+}
+
+// Halloween 2: Purple base, random orange and green "pumpkin" flashes
+void showHalloween2() {
+  fill_solid(leds, NUM_LEDS, CRGB(120, 0, 180));
+  for (int i = 0; i < NUM_LEDS / 12; i++) {
+    int idx = random(NUM_LEDS);
+    if (random8(2) == 0) {
+      leds[idx] = CRGB(255, 40, 10); // more red-orange
+    } else {
+      leds[idx] = CRGB(0, 255, 40); // green
+    }
+  }
+}
+
+// Halloween 3: Flickering candle effect with orange/yellow, occasional purple flashes
+void showHalloween3() {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t flicker = random8(40);
+    leds[i] = CRGB(255, 60 + flicker, 10 + random8(20)); // more red-orange flicker
+    if (random8(80) == 0) {
+      leds[i] = CRGB(120, 0, 180); // purple flash
+    }
+  }
+}
+// Halloween 4: Blocks of color flash up and down randomly
+void showHalloween4() {
+  static uint8_t blockState[30] = {0};
+  static int blockDir[30] = {0};
+  static uint8_t blockColor[30] = {0};
+  static unsigned long lastUpdate = 0;
+  const int blockSize = 10;
+  const int numBlocks = NUM_LEDS / blockSize;
+  unsigned long now = millis();
+  if (now - lastUpdate > 80) {
+    lastUpdate = now;
+    for (int b = 0; b < numBlocks; b++) {
+      if (blockState[b] == 0 && random8(18) == 0) {
+        blockDir[b] = random8(2) ? 1 : -1;
+        blockColor[b] = random8(3); // 0=orange, 1=purple, 2=green
+        blockState[b] = blockDir[b] > 0 ? 1 : blockSize;
+      } else if (blockState[b] > 0) {
+        blockState[b] += blockDir[b];
+        if (blockState[b] > blockSize || blockState[b] < 1) blockState[b] = 0;
+      }
+    }
+  }
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  for (int b = 0; b < numBlocks; b++) {
+    if (blockState[b] > 0) {
+      CRGB color = CRGB::Black;
+      if (blockColor[b] == 0) color = CRGB(255, 40, 10); // more red-orange
+      else if (blockColor[b] == 1) color = CRGB(120, 0, 180); // purple
+      else color = CRGB(0, 255, 40); // green
+      int start = b * blockSize;
+      int end = start + blockState[b] * blockDir[b];
+      if (blockDir[b] > 0) {
+        for (int i = start; i < start + blockState[b]; i++) {
+          if (i < NUM_LEDS) leds[i] = color;
+        }
+      } else {
+        for (int i = start + blockSize - 1; i >= start + blockSize - blockState[b]; i--) {
+          if (i < NUM_LEDS && i >= 0) leds[i] = color;
+        }
+      }
+    }
+  }
+}
+
+void handleHalloween0() {
+  currentMode = MODE_HALLOWEEN0;
+  server.send(200, "text/plain", "Halloween 0 effect triggered");
+}
+void handleHalloween1() {
+  currentMode = MODE_HALLOWEEN1;
+  server.send(200, "text/plain", "Halloween 1 effect triggered");
+}
+void handleHalloween2() {
+  currentMode = MODE_HALLOWEEN2;
+  server.send(200, "text/plain", "Halloween 2 effect triggered");
+}
+void handleHalloween3() {
+  currentMode = MODE_HALLOWEEN3;
+  server.send(200, "text/plain", "Halloween 3 effect triggered");
+}
+void handleHalloween4() {
+  currentMode = MODE_HALLOWEEN4;
+  server.send(200, "text/plain", "Halloween 4 effect triggered");
 }
 
 void handleRainbow() {
@@ -380,6 +674,11 @@ void handleElectricity() {
       boltsInitialized = false;
     }
   }
+  // Ensure bolts array exists so the effect can run immediately after triggering
+  if (!bolts) {
+    bolts = new Bolt[NUM_BOLTS];
+    boltsInitialized = false;
+  }
   currentMode = MODE_ELECTRICITY;
   server.send(200, "text/plain", "Electricity effect triggered");
 }
@@ -399,6 +698,11 @@ void handleElectricity2() {
       bolts = new Bolt[NUM_BOLTS];
       boltsInitialized = false;
     }
+  }
+  // Ensure bolts array exists so the effect can run immediately after triggering
+  if (!bolts) {
+    bolts = new Bolt[NUM_BOLTS];
+    boltsInitialized = false;
   }
   currentMode = MODE_ELECTRICITY2;
   server.send(200, "text/plain", "Electricity2 effect triggered");
@@ -423,29 +727,51 @@ void handleBrightness() {
   }
 }
 
+void handleRelayCallback(void (*handler)()) {
+  Serial.print("Incoming request: ");
+  Serial.print(server.uri());
+  Serial.print(" args=");
+  Serial.print(server.args());
+  Serial.print(" relay=");
+  Serial.println(server.hasArg("relay") ? server.arg("relay") : "false");
+  maybeRelay();
+  handler();
+}
+
 void setup() {
+  server.on("/halloween4", HTTP_GET, []() { handleRelayCallback(handleHalloween4); });
+  server.on("/halloween0", HTTP_GET, []() { handleRelayCallback(handleHalloween0); });
+  server.on("/halloween1", HTTP_GET, []() { handleRelayCallback(handleHalloween1); });
+  server.on("/halloween2", HTTP_GET, []() { handleRelayCallback(handleHalloween2); });
+  server.on("/halloween3", HTTP_GET, []() { handleRelayCallback(handleHalloween3); });
   Serial.begin(115200);
   delay(1000);
+  Serial.println("Starting setup...");
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(70);
   showBootStatus(CRGB::Red); // Show red status lights
   FastLED.show();
   setup_wifi();
-  server.on("/rainbow", HTTP_GET, handleRainbow);
-  server.on("/electricity", HTTP_GET, handleElectricity);
-  server.on("/electricity2", HTTP_GET, handleElectricity2);
-  server.on("/off", HTTP_GET, handleOff);
-  server.on("/brightness", HTTP_GET, handleBrightness);
-  server.on("/fire", HTTP_GET, handleFire);
-  server.on("/firerainbow", HTTP_GET, handleFireRainbow);
-  server.on("/red", HTTP_GET, handleRed);
-  server.on("/green", HTTP_GET, handleGreen);
-  server.on("/blue", HTTP_GET, handleBlue);
-  server.on("/purple", HTTP_GET, handlePurple);
-  server.on("/pink", HTTP_GET, handlePink);
-  server.on("/orange", HTTP_GET, handleOrange);
+  server.on("/rainbow", HTTP_GET, []() { handleRelayCallback(handleRainbow); });
+  server.on("/electricity", HTTP_GET, []() { handleRelayCallback(handleElectricity); });
+  server.on("/electricity2", HTTP_GET, []() { handleRelayCallback(handleElectricity2); });
+  server.on("/off", HTTP_GET, []() { handleRelayCallback(handleOff); });
+  server.on("/brightness", HTTP_GET, []() { handleRelayCallback(handleBrightness); });
+  server.on("/fire", HTTP_GET, []() { handleRelayCallback(handleFire); });
+  server.on("/firerainbow", HTTP_GET, []() { handleRelayCallback(handleFireRainbow); });
+  server.on("/red", HTTP_GET, []() { handleRelayCallback(handleRed); });
+  server.on("/green", HTTP_GET, []() { handleRelayCallback(handleGreen); });
+  server.on("/blue", HTTP_GET, []() { handleRelayCallback(handleBlue); });
+  server.on("/purple", HTTP_GET, []() { handleRelayCallback(handlePurple); });
+  server.on("/pink", HTTP_GET, []() { handleRelayCallback(handlePink); });
+  server.on("/yellow", HTTP_GET, []() { handleRelayCallback(handleYellow); });
+  server.on("/orange", HTTP_GET, []() { handleRelayCallback(handleOrange); });
+  server.on("/christmas0", HTTP_GET, []() { handleRelayCallback(handleChristmas0); });
+  server.on("/christmas1", HTTP_GET, []() { handleRelayCallback(handleChristmas1); });
+  server.on("/christmas2", HTTP_GET, []() { handleRelayCallback(handleChristmas2); });
   // Add more endpoints here as needed
   server.begin();
+  Serial.println("HTTP server started");
 }
 
 void loop() {
@@ -494,8 +820,44 @@ void loop() {
         showPink();
         FastLED.show();
         break;
+      case MODE_YELLOW:
+        showYellow();
+        FastLED.show();
+        break;
       case MODE_ORANGE:
         showOrange();
+        FastLED.show();
+        break;
+      case MODE_XMAS0:
+        showChristmas0();
+        FastLED.show();
+        break;
+      case MODE_XMAS1:
+        showChristmas1();
+        FastLED.show();
+        break;
+      case MODE_XMAS2:
+        showChristmas2();
+        FastLED.show();
+        break;
+      case MODE_HALLOWEEN0:
+        showHalloween0();
+        FastLED.show();
+        break;
+      case MODE_HALLOWEEN1:
+        showHalloween1();
+        FastLED.show();
+        break;
+      case MODE_HALLOWEEN2:
+        showHalloween2();
+        FastLED.show();
+        break;
+      case MODE_HALLOWEEN3:
+        showHalloween3();
+        FastLED.show();
+        break;
+      case MODE_HALLOWEEN4:
+        showHalloween4();
         FastLED.show();
         break;
       case MODE_NONE:
