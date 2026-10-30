@@ -4,12 +4,24 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 
+// LED, WiFi and IP settings come from build_src_flags populated by
+// env_secrets.ini (see env_secrets.example.ini).
+#if !defined(CFG_NUM_LEDS) || !defined(CFG_DATA_PIN)
+#error "NUM_LEDS and DATA_PIN must be set in env_secrets.ini ([leds] section)"
+#endif
+#if !defined(WIFI_SSID) || !defined(WIFI_PASSWORD)
+#error "WIFI_SSID and WIFI_PASSWORD must be set in env_secrets.ini ([secrets] section)"
+#endif
+#if !defined(USE_DHCP) || !defined(STATIC_IP) || !defined(GATEWAY_IP) || !defined(SUBNET_MASK)
+#error "USE_DHCP, STATIC_IP, GATEWAY_IP and SUBNET_MASK must be set in env_secrets.ini ([network] section)"
+#endif
+
 // ------------------- LED Setup -------------------
 #define LED_TYPE WS2812B
-#define COLOR_ORDER GRB
-#define NUM_LEDS 300
-#define DATA_PIN 2  // D4 on ESP8266 (Tentacle pin)
-// #define DATA_PIN 15  // D4 on ESP8266 (Test Pin)
+#define COLOR_ORDER RGB
+// Build flags use a CFG_ prefix because FastLED uses DATA_PIN internally
+constexpr int NUM_LEDS = CFG_NUM_LEDS;
+constexpr uint8_t DATA_PIN = CFG_DATA_PIN;
 
 CRGB leds[NUM_LEDS];
 
@@ -77,33 +89,24 @@ int electricityPos = 0;
 bool electricityDirUp = true;
 
 // --- WiFi Setup ---
-
-
-
-
-
-// Home Configuration
-
-// const char* ssid = "VM8947480";
-// const char* password = "phnX7zzjwpwkk2ow";
-// IPAddress local_IP(192, 168, 0, 199);      // Change last octet as needed
-// IPAddress gateway(192, 168, 0, 1);
-// IPAddress subnet(255, 255, 255, 0); // Standard subnet for home networks
-
-// Portable Configuration
-
-const char* ssid = "danlers1234";
-const char* password = "Danlers1234";
-IPAddress subnet(255, 255, 255, 240);
-IPAddress local_IP(172, 20, 10, 10);      // Change last octet as needed
-IPAddress gateway(172, 20, 10, 0);
-
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
+bool useDHCP = USE_DHCP;
+IPAddress local_IP;
+IPAddress gateway;
+IPAddress subnet;
 
 unsigned long lastFrameTime = 0;
 const int frameInterval = 30; // ms
 
 ESP8266WebServer server(80);
 const char* relayHosts[] = {"172.20.10.11", "172.20.10.12", "172.20.10.13"};
+
+bool repeatEnabled = false;
+unsigned long repeatIntervalMs = 15000;
+unsigned long lastRepeatTime = 0;
+String lastRelayPath = "";
+String lastRelayQuery = "";
 
 bool isRelayRequest() {
   if (!server.hasArg("relay")) return false;
@@ -115,7 +118,7 @@ String buildRelayQueryString() {
   String query = "";
   for (int i = 0; i < server.args(); i++) {
     String name = server.argName(i);
-    if (name.equalsIgnoreCase("relay")) continue;
+    if (name.equalsIgnoreCase("relay") || name.equalsIgnoreCase("repeat")) continue;
     if (query.length() == 0) {
       query += "?";
     } else {
@@ -126,13 +129,13 @@ String buildRelayQueryString() {
   return query;
 }
 
-void relayRequestToHost(const char* host) {
+void relayRequestToHost(const char* host, const String& path, const String& query) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Relay skipped: WiFi not connected");
     return;
   }
 
-  String url = String("http://") + host + server.uri() + buildRelayQueryString();
+  String url = String("http://") + host + path + query;
   Serial.print("Relay request URL: ");
   Serial.println(url);
 
@@ -153,15 +156,68 @@ void relayRequestToHost(const char* host) {
 }
 
 void maybeRelay() {
+  if (server.uri() == "/repeat" || server.uri() == "/stopRelaying") {
+    Serial.print("maybeRelay: skipping relay for control endpoint ");
+    Serial.println(server.uri());
+    return;
+  }
+
   if (!isRelayRequest()) {
     Serial.println("maybeRelay: relay disabled");
     return;
   }
 
+  lastRelayPath = server.uri();
+  lastRelayQuery = buildRelayQueryString();
+  Serial.print("Stored last relay command: ");
+  Serial.print(lastRelayPath);
+  Serial.print(" ");
+  Serial.println(lastRelayQuery);
+
   Serial.println("maybeRelay: relay enabled");
+  String currentPath = server.uri();
+  String currentQuery = buildRelayQueryString();
   for (unsigned int i = 0; i < sizeof(relayHosts) / sizeof(relayHosts[0]); i++) {
-    relayRequestToHost(relayHosts[i]);
+    relayRequestToHost(relayHosts[i], currentPath, currentQuery);
   }
+}
+
+void relayLastCommand() {
+  if (!repeatEnabled) {
+    return;
+  }
+  if (lastRelayPath.length() == 0) {
+    Serial.println("relayLastCommand: no last command stored");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("relayLastCommand: WiFi not connected");
+    return;
+  }
+  Serial.print("relayLastCommand: repeating ");
+  Serial.print(lastRelayPath);
+  Serial.print(" ");
+  Serial.println(lastRelayQuery);
+  for (unsigned int i = 0; i < sizeof(relayHosts) / sizeof(relayHosts[0]); i++) {
+    relayRequestToHost(relayHosts[i], lastRelayPath, lastRelayQuery);
+  }
+}
+
+void handleRepeat() {
+  if (lastRelayPath.length() == 0) {
+    server.send(400, "text/plain", "No last command to repeat");
+    return;
+  }
+  repeatEnabled = true;
+  lastRepeatTime = millis();
+  server.send(200, "text/plain", "Repeat relay started");
+  Serial.println("Repeat relay started");
+}
+
+void handleStopRelaying() {
+  repeatEnabled = false;
+  server.send(200, "text/plain", "Repeat relay stopped");
+  Serial.println("Repeat relay stopped");
 }
 
 // ------------------- Function Declarations -------------------
@@ -535,30 +591,78 @@ void showChristmas2() {
   offset++;
 }
 // --- Halloween Effects ---
-// Halloween 0: Alternating orange and purple, with random white flashes
+// Shared Halloween palette. Orange has no blue and plenty of green so it reads
+// as a deep pumpkin orange on WS2812B rather than drifting towards pink.
+const CRGB HALLOWEEN_ORANGE = CRGB(255, 75, 0);
+const CRGB HALLOWEEN_PURPLE = CRGB(120, 0, 180);
+const CRGB HALLOWEEN_GREEN = CRGB(0, 255, 40);
+
+CRGB randomHalloweenColor() {
+  switch (random8(4)) {
+    case 0:
+    case 1: return HALLOWEEN_ORANGE;
+    case 2: return HALLOWEEN_PURPLE;
+    default: return HALLOWEEN_GREEN;
+  }
+}
+
+// Halloween 0: "Witch comets" - coloured comets with fading tails race up and
+// down the strip, bouncing off the ends and changing colour/speed at random
 void showHalloween0() {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    if ((i / 10) % 2 == 0) {
-      leds[i] = CRGB(255, 40, 10); // more red-orange
-    } else {
-      leds[i] = CRGB(120, 0, 180); // purple
+  struct Comet {
+    int32_t pos;  // 8.8 fixed-point LED index
+    int16_t vel;  // 8.8 fixed-point LEDs per frame
+    CRGB color;
+  };
+  const int numComets = 5;
+  static Comet comets[numComets];
+  static bool initialized = false;
+  const int32_t maxPos = (int32_t)(NUM_LEDS - 1) << 8;
+
+  if (!initialized) {
+    for (Comet& c : comets) {
+      c.pos = (int32_t)random16(NUM_LEDS) << 8;
+      c.vel = (int16_t)random16(120, 700) * (random8(2) ? 1 : -1);
+      c.color = randomHalloweenColor();
     }
-    if (random8(60) == 0) {
-      leds[i] = CRGB::White;
+    initialized = true;
+  }
+
+  fadeToBlackBy(leds, NUM_LEDS, 70);
+  for (Comet& c : comets) {
+    c.pos += c.vel;
+    if (c.pos <= 0 || c.pos >= maxPos) {
+      c.pos = c.pos <= 0 ? 0 : maxPos;
+      int16_t dir = c.vel > 0 ? -1 : 1;
+      if (random8(3) == 0) {
+        c.color = randomHalloweenColor();
+        c.vel = dir * (int16_t)random16(120, 700);
+      } else {
+        c.vel = dir * abs(c.vel);
+      }
+    }
+    int head = c.pos >> 8;
+    leds[head] = c.color;
+    // Anti-alias the leading edge so slow comets glide instead of stepping
+    int next = head + (c.vel > 0 ? 1 : -1);
+    if (next >= 0 && next < NUM_LEDS) {
+      CRGB tip = c.color;
+      tip.nscale8(c.vel > 0 ? (c.pos & 0xFF) : 255 - (c.pos & 0xFF));
+      leds[next] |= tip;
     }
   }
 }
 
 // Halloween 1: Orange base, purple "ghost" pulses moving along the strip
 void showHalloween1() {
-  static uint8_t ghostPos = 0;
-  fill_solid(leds, NUM_LEDS, CRGB(255, 40, 10));
+  static uint16_t ghostPos = 0;
+  fill_solid(leds, NUM_LEDS, HALLOWEEN_ORANGE);
   for (int i = 0; i < 5; i++) {
     int pos = (ghostPos + i * (NUM_LEDS / 5)) % NUM_LEDS;
     for (int j = -2; j <= 2; j++) {
       int idx = pos + j;
       if (idx >= 0 && idx < NUM_LEDS) {
-        leds[idx] = CRGB(120, 0, 180); // purple ghost
+        leds[idx] = HALLOWEEN_PURPLE; // purple ghost
       }
     }
   }
@@ -567,68 +671,126 @@ void showHalloween1() {
 
 // Halloween 2: Purple base, random orange and green "pumpkin" flashes
 void showHalloween2() {
-  fill_solid(leds, NUM_LEDS, CRGB(120, 0, 180));
+  fill_solid(leds, NUM_LEDS, HALLOWEEN_PURPLE);
   for (int i = 0; i < NUM_LEDS / 12; i++) {
     int idx = random(NUM_LEDS);
     if (random8(2) == 0) {
-      leds[idx] = CRGB(255, 40, 10); // more red-orange
+      leds[idx] = HALLOWEEN_ORANGE;
     } else {
-      leds[idx] = CRGB(0, 255, 40); // green
+      leds[idx] = HALLOWEEN_GREEN;
     }
   }
 }
 
-// Halloween 3: Flickering candle effect with orange/yellow, occasional purple flashes
+// Halloween 3: "Haunted fog" - drifting purple fog with pairs of glowing eyes
+// that open, blink and close at random, broken up by flickering lightning
 void showHalloween3() {
+  struct Eyes {
+    int pos;
+    uint8_t age;
+    uint8_t life; // 0 = inactive
+    CRGB color;
+  };
+  const int numEyes = 4;
+  const int eyeGap = 3;
+  static Eyes eyes[numEyes];
+  static uint8_t strikeFrames = 0;
+
+  // Two sine waves drifting in opposite directions make slowly shifting fog
+  // banks. (FastLED's inoise8 crashes on ESP8266: it byte-reads a PROGMEM table.)
+  uint32_t t = millis();
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t flicker = random8(40);
-    leds[i] = CRGB(255, 60 + flicker, 10 + random8(20)); // more red-orange flicker
-    if (random8(80) == 0) {
-      leds[i] = CRGB(120, 0, 180); // purple flash
+    uint8_t a = sin8((uint8_t)(i * 7 + t / 12));
+    uint8_t b = sin8((uint8_t)(i * 11 - t / 17));
+    uint8_t fog = qsub8((a + b) / 2, 100); // dark gaps between fog banks
+    leds[i] = HALLOWEEN_PURPLE;
+    leds[i].nscale8(qadd8(fog, fog >> 1));
+  }
+
+  for (Eyes& e : eyes) {
+    if (e.life == 0) {
+      if (random8(60) == 0) {
+        e.pos = random16(NUM_LEDS - eyeGap);
+        e.age = 0;
+        e.life = random8(60, 200);
+        e.color = random8(3) == 0 ? HALLOWEEN_GREEN : HALLOWEEN_ORANGE;
+      }
+      continue;
+    }
+    uint8_t level = 255;
+    if (e.age < 8) level = e.age * 32;                         // opening
+    else if (e.life - e.age < 8) level = (e.life - e.age) * 32; // closing
+    else if (e.age % 45 < 3) level = 0;                         // blink
+    CRGB c = e.color;
+    c.nscale8(level);
+    leds[e.pos] = c;
+    leds[e.pos + eyeGap] = c;
+    if (++e.age >= e.life) e.life = 0;
+  }
+
+  if (strikeFrames == 0 && random8() < 2) {
+    strikeFrames = random8(6, 14);
+  }
+  if (strikeFrames > 0) {
+    strikeFrames--;
+    if (random8(3) != 0) {
+      int len = random16(NUM_LEDS / 4, NUM_LEDS + 1);
+      int start = random16(NUM_LEDS - len + 1);
+      fill_solid(leds + start, len, random8(2) ? CRGB::White : CRGB(180, 140, 255));
     }
   }
 }
-// Halloween 4: Blocks of color flash up and down randomly
+
+// Halloween 4: "Cauldron shuffle" - the strip repaints in a new Halloween colour
+// LED by LED, either in a random order or as a fast sweep (up, down or from the
+// centre out). Each newly lit LED sparks white-hot before settling.
 void showHalloween4() {
-  static uint8_t blockState[30] = {0};
-  static int blockDir[30] = {0};
-  static uint8_t blockColor[30] = {0};
-  static unsigned long lastUpdate = 0;
-  const int blockSize = 10;
-  const int numBlocks = NUM_LEDS / blockSize;
-  unsigned long now = millis();
-  if (now - lastUpdate > 80) {
-    lastUpdate = now;
-    for (int b = 0; b < numBlocks; b++) {
-      if (blockState[b] == 0 && random8(18) == 0) {
-        blockDir[b] = random8(2) ? 1 : -1;
-        blockColor[b] = random8(3); // 0=orange, 1=purple, 2=green
-        blockState[b] = blockDir[b] > 0 ? 1 : blockSize;
-      } else if (blockState[b] > 0) {
-        blockState[b] += blockDir[b];
-        if (blockState[b] > blockSize || blockState[b] < 1) blockState[b] = 0;
+  static uint16_t order[NUM_LEDS];
+  static CRGB target[NUM_LEDS];
+  static int step = NUM_LEDS; // NUM_LEDS means the current transition is done
+  static int rate = 1;
+  static uint8_t hold = 0;
+  static CRGB currentColor = CRGB::Black;
+
+  if (step < NUM_LEDS) {
+    for (int n = 0; n < rate && step < NUM_LEDS; n++, step++) {
+      int idx = order[step];
+      target[idx] = currentColor;
+      if (currentColor) leds[idx] = CRGB(255, 220, 160); // spark
+    }
+    if (step >= NUM_LEDS) hold = random8(10, 45);
+  } else if (hold > 0) {
+    hold--;
+  } else {
+    CRGB next;
+    do {
+      next = CRGB::Black;
+      if (random8(5) != 0) next = randomHalloweenColor();
+    } while (next == currentColor);
+    currentColor = next;
+
+    uint8_t pattern = random8(6); // 0-2 shuffle, 3 up, 4 down, 5 centre out
+    const int mid = NUM_LEDS / 2;
+    for (int k = 0; k < NUM_LEDS; k++) {
+      if (pattern == 4) order[k] = NUM_LEDS - 1 - k;
+      else if (pattern == 5) order[k] = (k & 1) ? mid - (k + 1) / 2 : mid + k / 2;
+      else order[k] = k;
+    }
+    if (pattern <= 2) {
+      for (int i = NUM_LEDS - 1; i > 0; i--) {
+        int j = random16(i + 1);
+        uint16_t tmp = order[i];
+        order[i] = order[j];
+        order[j] = tmp;
       }
     }
+    rate = NUM_LEDS / random8(10, 40);
+    if (rate < 1) rate = 1;
+    step = 0;
   }
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
-  for (int b = 0; b < numBlocks; b++) {
-    if (blockState[b] > 0) {
-      CRGB color = CRGB::Black;
-      if (blockColor[b] == 0) color = CRGB(255, 40, 10); // more red-orange
-      else if (blockColor[b] == 1) color = CRGB(120, 0, 180); // purple
-      else color = CRGB(0, 255, 40); // green
-      int start = b * blockSize;
-      int end = start + blockState[b] * blockDir[b];
-      if (blockDir[b] > 0) {
-        for (int i = start; i < start + blockState[b]; i++) {
-          if (i < NUM_LEDS) leds[i] = color;
-        }
-      } else {
-        for (int i = start + blockSize - 1; i >= start + blockSize - blockState[b]; i--) {
-          if (i < NUM_LEDS && i >= 0) leds[i] = color;
-        }
-      }
-    }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    nblend(leds[i], target[i], 50);
   }
 }
 
@@ -769,6 +931,8 @@ void setup() {
   server.on("/christmas0", HTTP_GET, []() { handleRelayCallback(handleChristmas0); });
   server.on("/christmas1", HTTP_GET, []() { handleRelayCallback(handleChristmas1); });
   server.on("/christmas2", HTTP_GET, []() { handleRelayCallback(handleChristmas2); });
+  server.on("/repeat", HTTP_GET, handleRepeat);
+  server.on("/stopRelaying", HTTP_GET, handleStopRelaying);
   // Add more endpoints here as needed
   server.begin();
   Serial.println("HTTP server started");
@@ -777,6 +941,10 @@ void setup() {
 void loop() {
   server.handleClient();
   unsigned long now = millis();
+  if (repeatEnabled && now - lastRepeatTime >= repeatIntervalMs) {
+    lastRepeatTime = now;
+    relayLastCommand();
+  }
   if (now - lastFrameTime >= frameInterval) {
     lastFrameTime = now;
     switch (currentMode) {
@@ -869,14 +1037,55 @@ void loop() {
 }
 
 // ------------------- WiFi Connection -------------------
+static WiFiEventHandler wifiDisconnectHandler;
+
 void setup_wifi() {
   delay(10);
   Serial.println("Connecting to WiFi...");
-  WiFi.config(local_IP, gateway, subnet);
+  WiFi.persistent(false); // don't wear out flash / avoid stale stored config
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);  // clear any previous connection/static config
+  delay(100);
+  // Print exact reason on every disconnect (e.g. 15=4-way handshake timeout/wrong
+  // password, 202=auth fail, 2xx=PMF/WPA3 mismatch)
+  wifiDisconnectHandler = WiFi.onStationModeDisconnected(
+      [](const WiFiEventStationModeDisconnected& evt) {
+        Serial.print(" [disconnect reason=");
+        Serial.print(evt.reason);
+        Serial.print("]");
+      });
+  if (useDHCP) {
+    // Force DHCP by clearing any static config
+    WiFi.config(0U, 0U, 0U);
+  } else if (local_IP.fromString(STATIC_IP) && gateway.fromString(GATEWAY_IP) &&
+             subnet.fromString(SUBNET_MASK)) {
+    WiFi.config(local_IP, gateway, subnet);
+  } else {
+    Serial.println("Invalid static IP config in env_secrets.ini, falling back to DHCP");
+    WiFi.config(0U, 0U, 0U);
+  }
   WiFi.begin(ssid, password);
+  int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    if (++attempts % 20 == 0) {
+      Serial.print(" status=");
+      Serial.println(WiFi.status()); // 1=no SSID found,4=auth/connect fail,6=disconnected
+    }
+    if (attempts == 40) {
+      // Scan and report visible networks to help diagnose (band/SSID issues)
+      Serial.println("\nStill not connected. Scanning for networks...");
+      int n = WiFi.scanNetworks();
+      for (int i = 0; i < n; i++) {
+        Serial.printf("  %s (RSSI %d)%s\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+                      WiFi.encryptionType(i) == ENC_TYPE_NONE ? " [open]" : "");
+      }
+      WiFi.scanDelete();
+      Serial.print("Retrying begin() for SSID: ");
+      Serial.println(ssid);
+      WiFi.begin(ssid, password);
+    }
   }
   Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
   // Change status lights to green
